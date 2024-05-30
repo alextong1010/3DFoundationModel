@@ -1,0 +1,21 @@
+# dirs
+dataset_path_dir: data/navi_v1.5
+model_save_dir: checkpoints/test_model_dir
+output_dir: outputs/test_output_dir
+
+# hyperparams
+pretrained_weight: openai/clip-vit-base-patch32
+num_epochs: 100
+num_train_demos: 200
+num_warmup_steps: 10000
+eval_epoch: 5
+verbose: false
+
+## optimizer
+lr: 0.00005
+beta1: 0.9
+beta2: 0.98
+eps: 0.000001
+
+## dataloder
+batch_size: 64
