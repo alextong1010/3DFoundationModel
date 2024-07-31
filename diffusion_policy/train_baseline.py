@@ -52,7 +52,7 @@ def main():
         display_name = None
     if config["wandb"]:
         wandb.init(
-            project="adap_diffusion_policy",
+            project="diffusion_policy_push_t",
             config=config,
             name=display_name
         )
@@ -210,7 +210,7 @@ def main():
         name='cosine',
         optimizer=optimizer,
         num_warmup_steps=config["num_warmup_steps"],
-        num_training_steps=len(dataloader) * num_epochs
+        num_training_steps=len(dataloader) * 3000
     )
     
     if config["use_pretrained"]:
