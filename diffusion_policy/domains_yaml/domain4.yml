@@ -1,0 +1,9 @@
+domain_id: 4
+object: T
+block_color: BurlyWood
+target_color: PowderBlue
+bg_color: White
+obstacle_color: Gray
+block_scale: 30
+num_mislead: 1
+num_obstacle: 2

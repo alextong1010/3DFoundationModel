@@ -1,0 +1,30 @@
+# mode
+adapt: false
+use_pretrained: false
+use_mlp: false
+
+# dirs
+display_name: baseline_original
+adapt_dataset_path_dir: push_circle_dataset_blue
+dataset_path_dir: push_circle_dataset_red
+models_save_dir: trained_models_baseline0
+output_dir: output_baseline0
+
+# hyperparams
+num_epochs: 100
+num_diffusion_iters: 100
+num_tests: 200
+num_vis_demos: 3
+num_train_demos: 200
+num_warmup_steps: 500
+pred_horizon: 16
+obs_horizon: 2
+action_horizon: 8
+max_steps: 300
+eval_epoch: 5
+lr: 0.0001
+weight_decay: 0.000001
+batch_size: 64
+resize_scale: 96
+wandb: true
+verbose: false

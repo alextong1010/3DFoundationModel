@@ -1,0 +1,9 @@
+domain_id: 8
+object: T
+block_color: ForestGreen
+target_color: Tan
+bg_color: White
+obstacle_color: CornflowerBlue
+block_scale: 30
+num_mislead: 1
+num_obstacle: 1

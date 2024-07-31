@@ -1,0 +1,12 @@
+domain_id: 11
+object: circle
+block_color: DeepSkyBlue
+target_color:
+- 102
+- 51
+- 153
+bg_color: White
+obstacle_color: Gray
+block_scale: 30
+num_mislead: 0
+num_obstacle: 0
