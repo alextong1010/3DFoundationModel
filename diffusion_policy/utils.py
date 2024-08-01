@@ -15,6 +15,7 @@ from diffusers.training_utils import EMAModel
 from diffusers.optimization import get_scheduler
 from tqdm.auto import tqdm
 from PIL import Image
+from transformers import CLIPImageProcessor, AutoImageProcessor
 
 # env import
 import os
@@ -50,11 +51,13 @@ def split_batch_by_id(batch, unique_ids):
 
     return split_batches
 
-def save(ema, nets, models_save_dir):
+def save(ema, nets, models_save_dir, pretrained_VE=False):
     if not os.path.exists(models_save_dir):
         os.makedirs(models_save_dir)
     torch.save(ema.state_dict(), os.path.join(models_save_dir, "ema_nets.pth"))
     for model_name, model in nets.items():
+        if pretrained_VE and model_name=="vision_encoder":
+            continue
         model_path = os.path.join(models_save_dir, f"{model_name}.pth")
         torch.save(model.state_dict(), model_path)
         print(f"{model_name}.pth saved")
@@ -155,7 +158,8 @@ class PushTImageDataset(torch.utils.data.Dataset):
                  id:int,
                  num_demos: int,
                  resize_scale: int, 
-                 pretrained=False):
+                 pretrained=False, 
+                 vision_encoder='resnet'):
 
         # read from zarr dataset
         dataset_root = zarr.open(dataset_path, 'r')
@@ -206,6 +210,7 @@ class PushTImageDataset(torch.utils.data.Dataset):
         self.id = id
         self.resize_scale = resize_scale
         self.pretrained = pretrained
+        self.vision_encoder = vision_encoder
 
     def __len__(self):
         return len(self.indices)
@@ -226,30 +231,40 @@ class PushTImageDataset(torch.utils.data.Dataset):
         )
 
         images = nsample['image'][:self.obs_horizon,:]
-        # "resize to 224 without normalization" reach the best avg score in baseline method
-        if self.pretrained:
-            transform = v2.Compose([
-                v2.ToImage(),
-                v2.ToDtype(torch.uint8, scale=True),
-                v2.Resize(self.resize_scale),
-                v2.ToDtype(torch.float32, scale=True),
-                v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-        else:
-            transform = v2.Compose([
-                v2.ToImage(),
-                v2.ToDtype(torch.uint8, scale=True),
-                v2.Resize(self.resize_scale),
-                v2.ToDtype(torch.float32, scale=True),
-                # v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-    
-        # PIL Image class will convert the range from [0, 255] to [0, 1] by default (tested)
-        images = [np.expand_dims(transform(image).numpy(), axis=0) for image in images]
+
+        if self.vision_encoder == 'resnet':
+            # "resize to 224 without normalization" reach the best avg score in baseline method
+            if self.pretrained:
+                transform = v2.Compose([
+                    v2.ToImage(),
+                    v2.ToDtype(torch.uint8, scale=True),
+                    v2.Resize(self.resize_scale),
+                    v2.ToDtype(torch.float32, scale=True),
+                    v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ])
+            else:
+                transform = v2.Compose([
+                    v2.ToImage(),
+                    v2.ToDtype(torch.uint8, scale=True),
+                    v2.Resize(self.resize_scale),
+                    v2.ToDtype(torch.float32, scale=True),
+                    # v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ])
         
-        # float32, (2,3,resize_scale,resize_scale)
-        # with v2.Normalize: range[-1.7, 2.7], otherwise: range[0, 1] 
-        images = np.concatenate(images, axis=0)
+            # PIL Image class will convert the range from [0, 255] to [0, 1] by default (tested)
+            images = [transform(image) for image in images]
+            
+            # float32, (2,3,resize_scale,resize_scale)
+            # with v2.Normalize: range[-1.7, 2.7], otherwise: range[0, 1] 
+            images = torch.stack(images)
+        elif self.vision_encoder == 'clip':
+            processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            images = processor(images=images, return_tensors="pt")["pixel_values"]
+        elif self.vision_encoder == 'dinov2':
+            image_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-small")
+            images = image_processor(images=images, return_tensors="pt")["pixel_values"]
+        else:
+            raise Exception("vision_encoder is not recognized!")
 
         # discard unused observations
         nsample['image'] = images

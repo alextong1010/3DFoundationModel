@@ -11,7 +11,7 @@ models_save_dir: outputs/trained_models_baseline0
 output_dir: outputs/output_baseline0
 
 # hyperparams
-num_epochs: 300
+num_epochs: 500
 num_diffusion_iters: 100
 num_tests: 50
 num_vis_demos: 3
@@ -28,3 +28,4 @@ batch_size: 64
 resize_scale: 224
 wandb: true
 verbose: false
+vision_encoder: resnet # resnet, clip or dinov2

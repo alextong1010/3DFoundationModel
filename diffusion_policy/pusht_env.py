@@ -7,6 +7,7 @@ import torch
 import torchvision
 from torchvision.transforms import v2
 from PIL import Image
+from transformers import CLIPImageProcessor, AutoImageProcessor
 
 # env import
 import gym
@@ -1172,7 +1173,8 @@ class PushTImageEnv(PushTEnv):
             render_size=96,
             domain_filename=None,
             resize_scale=96, 
-            pretrained=False):           # NEW CODE
+            pretrained=False,
+            vision_encoder='resnet'):           # NEW CODE
         super().__init__(
             legacy=legacy,
             block_cog=block_cog,
@@ -1198,34 +1200,44 @@ class PushTImageEnv(PushTEnv):
         self.render_cache = None
         self.resize_scale=resize_scale
         self.pretrained=pretrained
+        self.vision_encoder=vision_encoder
 
     def _get_obs(self):
         img = super()._render_frame(mode='rgb_array')
 
-        if self.pretrained:
-            transform = v2.Compose([
-                v2.ToImage(),
-                v2.ToDtype(torch.uint8, scale=True),
-                v2.Resize(self.resize_scale),
-                v2.ToDtype(torch.float32, scale=True),
-                v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
+        if self.vision_encoder == 'resnet':
+            if self.pretrained:
+                transform = v2.Compose([
+                    v2.ToImage(),
+                    v2.ToDtype(torch.uint8, scale=True),
+                    v2.Resize(self.resize_scale),
+                    v2.ToDtype(torch.float32, scale=True),
+                    v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ])
+            else:
+                transform = v2.Compose([
+                    v2.ToImage(),
+                    v2.ToDtype(torch.uint8, scale=True),
+                    v2.Resize(self.resize_scale),
+                    v2.ToDtype(torch.float32, scale=True),
+                    # v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ])
+            # transform raw image
+            img_obs = transform(img)
+        elif self.vision_encoder == 'clip':
+            processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            img_obs = processor(images=img, return_tensors="pt")["pixel_values"].squeeze()
+        elif self.vision_encoder == 'dinov2':
+            image_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-small")
+            img_obs = image_processor(images=img, return_tensors="pt")["pixel_values"].squeeze()
         else:
-            transform = v2.Compose([
-                v2.ToImage(),
-                v2.ToDtype(torch.uint8, scale=True),
-                v2.Resize(self.resize_scale),
-                v2.ToDtype(torch.float32, scale=True),
-                # v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
+            raise Exception("vision_encoder is not recognized!")
 
         agent_pos = np.array(self.agent.position)
 
-        # transform raw image
-        img_obs = transform(img).numpy()
         # img_obs = np.moveaxis(img.astype(np.float32) / 255, -1, 0)
         obs = {
-            'image': img_obs,
+            'image': img_obs.numpy(),
             'agent_pos': agent_pos
         }
 

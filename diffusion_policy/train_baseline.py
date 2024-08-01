@@ -11,6 +11,11 @@ import os
 import yaml
 import shutil
 
+# CLIP
+from transformers import CLIPVisionModel
+# DinoV2
+from transformers import Dinov2Model
+
 # other files
 from utils import *
 from pusht_env import *
@@ -51,8 +56,9 @@ def main():
     if display_name == "default":
         display_name = None
     if config["wandb"]:
+        # wandb.login(key="c816a85f1488f7f1df913c6f7dae063d173d27b3") 
         wandb.init(
-            project="diffusion_policy_push_t",
+            project="adap_diffusion_policy",
             config=config,
             name=display_name
         )
@@ -74,7 +80,7 @@ def main():
     print("\nBaseline Mode: Train Single Diffusion Policy")
 
     if config["use_pretrained"]:
-        print("Load and freeze pretrained ResNet18")
+        print("Load and freeze pretrained vision encoder")
         resize_scale = 224
     else:
         print("Unfreeze and update ResNet18")
@@ -94,7 +100,7 @@ def main():
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         os.makedirs(output_dir_good_vis)
-
+    
     if not os.path.exists(models_save_dir):
         os.makedirs(models_save_dir)
 
@@ -123,7 +129,8 @@ def main():
             id = num_datasets,
             num_demos = num_train_demos,
             resize_scale = resize_scale,
-            pretrained = config["use_pretrained"]
+            pretrained = config["use_pretrained"],
+            vision_encoder = config["vision_encoder"]
         )
         num_datasets += 1
         # save training data statistics (min, max) for each dim
@@ -152,24 +159,36 @@ def main():
         print("batch['action'].shape: {}, {}, [{},{}]".format(batch['action'].shape, batch['action'].dtype, torch.min(batch['action']), torch.max(batch['action'])))
         print("batch['id']: {}, [{},{}]".format(batch['id'].shape, torch.min(batch['id']), torch.max(batch['id'])))
 
-    # ResNet18 has output dim of 512
-    vision_feature_dim = 512
+    nets = nn.ModuleDict({})
+    noise_schedulers = {}
+
+    # add one dp trained on all domains
+    if config["vision_encoder"] == "resnet":
+        print("Use ResNet18 as vision encoder")
+        vision_feature_dim = 512
+        if config["use_pretrained"]:
+            vision_encoder = get_resnet(weights='IMAGENET1K_V1')
+        else:
+            vision_encoder = get_resnet()
+        vision_encoder = replace_bn_with_gn(vision_encoder)
+    elif config["vision_encoder"] == "clip":
+        print("Use pretrained CLIP-ViT as vision encoder")
+        vision_feature_dim = 768
+        vision_encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
+    elif config["vision_encoder"] == "dinov2":
+        print("Use pretrained DinoV2 as vision encoder")
+        vision_feature_dim = 384
+        vision_encoder = Dinov2Model.from_pretrained("facebook/dinov2-small")
+    else:
+        raise Exception("vision_encoder is not recognized!")
+    
+    nets['vision_encoder'] = vision_encoder
+    
     # agent_pos is 2 dimensional
     lowdim_obs_dim = 2
     # observation feature has 514 dims in total per step
     obs_dim = vision_feature_dim + lowdim_obs_dim
     action_dim = 2
-
-    nets = nn.ModuleDict({})
-    noise_schedulers = {}
-
-    # add one dp trained on all domains
-    if config["use_pretrained"]:
-        vision_encoder = get_resnet(weights='IMAGENET1K_V1')
-    else:
-        vision_encoder = get_resnet()
-    vision_encoder = replace_bn_with_gn(vision_encoder)
-    nets['vision_encoder'] = vision_encoder
 
     if config["use_mlp"]:
         nets["invariant_fc"] = DropoutMLP(input_dim=vision_feature_dim, 
@@ -189,6 +208,8 @@ def main():
 
     if config["adapt"]:
         for model_name, model in nets.items():
+            if model_name=="vision_encoder" and (config["use_pretrained"] or config["vision_encoder"]!="resnet"):
+                continue
             model_path = os.path.join(models_save_dir, f"{model_name}.pth")
             model_state_dict = torch.load(model_path)
             model.load_state_dict(model_state_dict)
@@ -210,14 +231,16 @@ def main():
         name='cosine',
         optimizer=optimizer,
         num_warmup_steps=config["num_warmup_steps"],
-        num_training_steps=len(dataloader) * 3000
+        num_training_steps=len(dataloader) * num_epochs
     )
     
+    print_model_parameter_sizes(nets)
+
     if config["use_pretrained"]:
         for param in nets["vision_encoder"].parameters():
             param.requires_grad = False
 
-    with tqdm(range(1, num_epochs+1), desc='Epoch') as tglobal:
+    with tqdm(range(1, num_epochs+1), desc='Epoch', position=0, leave=True) as tglobal:
         # unique_ids = torch.arange(num_datasets).cpu()
         # epoch loop
         for epoch_idx in tglobal:
@@ -225,7 +248,7 @@ def main():
                 wandb.log({'epoch': epoch_idx})    
             epoch_loss = list()
             # batch loop
-            with tqdm(dataloader, desc='Batch', leave=False) as tepoch:
+            with tqdm(dataloader, desc='Batch', position=1, leave=False) as tepoch:
                 for nbatch in tepoch:
 
                     if config["wandb"]:
@@ -239,7 +262,15 @@ def main():
                     B = nagent_pos.shape[0]
 
                     # encoder vision features
-                    image_features = nets["vision_encoder"](nimage.flatten(end_dim=1))
+                    if config["vision_encoder"]=='resnet':
+                        image_features = nets["vision_encoder"](nimage.flatten(end_dim=1))
+                    elif config["vision_encoder"]=='clip':
+                        outputs = nets["vision_encoder"](pixel_values=nimage.flatten(end_dim=1))
+                        image_features = outputs.pooler_output
+                    elif config["vision_encoder"]=='dinov2':
+                        outputs = nets["vision_encoder"](pixel_values=nimage.flatten(end_dim=1))
+                        image_features = outputs.pooler_output
+
                     if config["use_mlp"]:
                         image_features = nets["invariant_fc"](image_features)
                     image_features = image_features.reshape(*nimage.shape[:2],-1)
@@ -303,7 +334,7 @@ def main():
                     checkpoint_dir = '{}/checkpoint_adapt_epoch_{}'.format(models_save_dir, epoch_idx)
                 if not os.path.exists(checkpoint_dir):
                     os.makedirs(checkpoint_dir)
-                save(ema, nets, checkpoint_dir)
+                save(ema, nets, checkpoint_dir, config["use_pretrained"] or config["vision_encoder"]!="resnet")
                 scores = eval_baseline(config, dataset_name, num_datasets, combined_stats, checkpoint_dir)
                 # (num_domains, num_tests)
 

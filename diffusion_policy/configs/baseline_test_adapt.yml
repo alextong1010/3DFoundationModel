@@ -1,17 +1,17 @@
 # mode
 adapt: true
-use_pretrained: false
+use_pretrained: true
 use_mlp: false
 
 # dirs
 display_name: default
-adapt_dataset_path_dir: push_circle_dataset_blue
-dataset_path_dir: push_circle_dataset_red
-models_save_dir: trained_models_baseline_test/checkpoint_epoch_2
-output_dir: output_baseline_test_adapt
+adapt_dataset_path_dir: push_t_dataset_blue
+dataset_path_dir: push_t_dataset_blue
+models_save_dir: outputs/trained_models_baseline_test/checkpoint_epoch_2
+output_dir: outputs/output_baseline_test_adapt
 
 # hyperparams
-num_epochs: 2
+num_epochs: 1
 num_diffusion_iters: 100
 num_tests: 3
 num_vis_demos: 1
@@ -21,10 +21,11 @@ pred_horizon: 16
 obs_horizon: 2
 action_horizon: 8
 max_steps: 300
-eval_epoch: 2
+eval_epoch: 1
 lr: 0.0001
 weight_decay: 0.000001
 batch_size: 64
 resize_scale: 96
 wandb: false
 verbose: false
+vision_encoder: resnet # resnet, clip or dinov2

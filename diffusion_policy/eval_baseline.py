@@ -9,6 +9,11 @@ import os
 import argparse
 import json
 
+# CLIP
+from transformers import CLIPVisionModel
+# DinoV2
+from transformers import Dinov2Model
+
 # dp defined utils
 from utils import *
 from pusht_env import *
@@ -33,7 +38,7 @@ def main():
     resize_scale = config["resize_scale"]
 
     if config["use_pretrained"]:
-        print("Load and freeze pretrained ResNet18")
+        print("Load and freeze pretrained vision encoder")
         resize_scale = 224
     else:
         print("Unfreeze and update ResNet18")
@@ -71,7 +76,8 @@ def main():
             id = num_datasets,
             num_demos = num_train_demos,
             resize_scale = resize_scale,
-            pretrained=config["use_pretrained"]
+            pretrained=config["use_pretrained"],
+            vision_encoder = config["vision_encoder"]
         )
         num_datasets += 1
         # save training data statistics (min, max) for each dim
@@ -96,7 +102,7 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
     resize_scale = config["resize_scale"]
 
     if config["use_pretrained"]:
-        print("Load and freeze pretrained ResNet18")
+        print("Load and freeze pretrained vision encoder")
         resize_scale = 224
 
     if num_vis_demos > num_tests:
@@ -115,19 +121,36 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
 
 
     ##################### Instantiating Model and EMA #####################
-    # ResNet18 has output dim of 512
-    vision_feature_dim = 512
+
+    nets = nn.ModuleDict({})
+
+    # add one dp trained on all domains
+    if config["vision_encoder"] == "resnet":
+        print("Use ResNet18 as vision encoder")
+        vision_feature_dim = 512
+        if config["use_pretrained"]:
+            vision_encoder = get_resnet(weights='IMAGENET1K_V1')
+        else:
+            vision_encoder = get_resnet()
+        vision_encoder = replace_bn_with_gn(vision_encoder)
+    elif config["vision_encoder"] == "clip":
+        print("Use pretrained CLIP-ViT as vision encoder")
+        vision_feature_dim = 768
+        vision_encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
+    elif config["vision_encoder"] == "dinov2":
+        print("Use pretrained DinoV2 as vision encoder")
+        vision_feature_dim = 384
+        vision_encoder = Dinov2Model.from_pretrained("facebook/dinov2-small")
+    else:
+        raise Exception("vision_encoder is not recognized!")
+
+    nets['vision_encoder'] = vision_encoder
+
     # agent_pos is 2 dimensional
     lowdim_obs_dim = 2
     # observation feature has 514 dims in total per step
     obs_dim = vision_feature_dim + lowdim_obs_dim
     action_dim = 2
-
-    nets = nn.ModuleDict({})
-
-    vision_encoder = get_resnet()
-    vision_encoder = replace_bn_with_gn(vision_encoder)
-    nets['vision_encoder'] = vision_encoder
 
     if config["use_mlp"]:
         nets["invariant_fc"] = DropoutMLP(input_dim=vision_feature_dim, 
@@ -151,6 +174,8 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
     ##################### LOADING Model and EMA #####################
         
     for model_name, model in nets.items():
+        if model_name=="vision_encoder" and (config["use_pretrained"] or config["vision_encoder"]!="resnet"):
+            continue
         model_path = os.path.join(models_save_dir, f"{model_name}.pth")
         model_state_dict = torch.load(model_path)
         model.load_state_dict(model_state_dict)
@@ -172,6 +197,7 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
     
     # (num_domains, num_tests)
     scores = [] 
+
     json_dict = dict()
     for domain_j in range(num_datasets):
         env_j_scores = []
@@ -189,7 +215,10 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
             noise_scheduler = create_injected_noise(num_diffusion_iters)
             if verbose:
                 # 0. create env object
-                env = PushTImageEnv(domain_filename=dataset_name[domain_j], resize_scale=resize_scale, pretrained=config["use_pretrained"])
+                env = PushTImageEnv(domain_filename=dataset_name[domain_j], 
+                                    resize_scale=resize_scale, 
+                                    pretrained=config["use_pretrained"],
+                                    vision_encoder = config["vision_encoder"])
                 # 1. seed env for initial state.
                 # Seed 0-600 are used for the demonstration dataset.
                 env.seed(1000)
@@ -208,7 +237,10 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
 
             # limit enviornment interaction to 300 steps before termination
             max_steps = config["max_steps"]
-            env = PushTImageEnv(domain_filename=dataset_name[domain_j], resize_scale=resize_scale, pretrained=config["use_pretrained"])
+            env = PushTImageEnv(domain_filename=dataset_name[domain_j], 
+                                resize_scale=resize_scale, 
+                                pretrained=config["use_pretrained"],
+                                vision_encoder = config["vision_encoder"])
             # use a seed >600 to avoid initial states seen in the training dataset
             env.seed(env_seed)
             # get first observation
@@ -223,7 +255,7 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
             step_idx = 0
 
             tqdm._instances.clear()
-            with tqdm(total=max_steps, desc="Eval Trial #{}".format(test_index)) as pbar:
+            with tqdm(total=max_steps, desc="Eval Trial #{}".format(test_index), position=0, leave=True) as pbar:
                 while not done:
                     B = 1
                     # stack the last obs_horizon number of observations
@@ -242,7 +274,15 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
                     # infer action
                     with torch.no_grad():
                         # get image features
-                        image_features = ema_nets["vision_encoder"](nimages)
+                        if config["vision_encoder"]=='resnet':
+                            image_features = nets["vision_encoder"](nimages)
+                        elif config["vision_encoder"]=='clip':
+                            outputs = nets["vision_encoder"](pixel_values=nimages)
+                            image_features = outputs.pooler_output
+                        elif config["vision_encoder"]=='dinov2':
+                            outputs = nets["vision_encoder"](pixel_values=nimages)
+                            image_features = outputs.pooler_output
+
                         if config["use_mlp"]:
                             image_features = nets["invariant_fc"](image_features)
                         # (2,512)
@@ -321,11 +361,11 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
         print("Single DP on Domain #{} Avg Score: {}".format(env_id, np.mean(env_j_scores)))
 
     ############################ Save Result  ############################ 
-        scores.append(env_j_scores)    
+        scores.append(env_j_scores)
 
     with open(os.path.join(output_dir_good_vis, 'result.json'), 'w') as fp:
-        json.dump(json_dict, fp)
-
+        json.dump(json_dict, fp)   
+        
     print("Eval done!")
     return scores
 
