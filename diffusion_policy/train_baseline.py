@@ -45,20 +45,21 @@ def main():
     lr = config['lr']
     weight_decay = config['weight_decay']
     batch_size = config['batch_size']
-    dataset_path_dir = config['dataset_path_dir']
-    adapt_dataset_path_dir = config['adapt_dataset_path_dir']
+    dataset_path = config['dataset_path']
+    domain_id = config['domain_id']
+
     output_dir = config['output_dir']
     models_save_dir = config['models_save_dir']
     verbose = config['verbose']
     display_name = config['display_name']
-    resize_scale = config["resize_scale"]
+    resize_scale = 224
 
     if display_name == "default":
         display_name = None
     if config["wandb"]:
         # wandb.login(key="c816a85f1488f7f1df913c6f7dae063d173d27b3") 
         wandb.init(
-            project="adap_diffusion_policy",
+            project="foundation_model_manipulation_eval",
             config=config,
             name=display_name
         )
@@ -76,25 +77,7 @@ def main():
     print(f"action_horizon: {action_horizon}")
     print(f"eval_epoch: {eval_epoch}")
 
-
-    print("\nBaseline Mode: Train Single Diffusion Policy")
-
-    if config["use_pretrained"]:
-        print("Load and freeze pretrained vision encoder")
-        resize_scale = 224
-    else:
-        print("Unfreeze and update ResNet18")
-
-    if config["use_mlp"]:
-        print("Insert a MLP between ResNet18 and Unet")
-
-    print("Use default AdamW as optimizer.")
-
-    if config["adapt"]:
-        print("Adapt Mode activated!\n")
-        dataset_path_dir = adapt_dataset_path_dir
-    else:
-        print("Adapt Mode deactivated!\n")
+    print("\nFreeze foundation model as vision encoder, train the head (Unet) in Diffusion Policy!")
 
     output_dir_good_vis = os.path.join(output_dir, "good_vis")
     if not os.path.exists(output_dir):
@@ -107,42 +90,27 @@ def main():
     if num_vis_demos > num_tests:
         num_vis_demos = num_tests
 
-    dataset_list = []
-    combined_stats = []
-    num_datasets = 0
-    dataset_name = {} # mapping for domain filename
-
-    for entry in sorted(os.listdir(dataset_path_dir)):
-        if not (entry[-5:] == '.zarr'):
-            continue
-        full_path = os.path.join(dataset_path_dir, entry)
-
-        domain_filename = entry.split(".")[0]
-        dataset_name[num_datasets] = domain_filename        
-
-        # create dataset from file
-        dataset = PushTImageDataset(
-            dataset_path=full_path,
-            pred_horizon=pred_horizon,
-            obs_horizon=obs_horizon,
-            action_horizon=action_horizon,
-            id = num_datasets,
-            num_demos = num_train_demos,
-            resize_scale = resize_scale,
-            pretrained = config["use_pretrained"],
-            vision_encoder = config["vision_encoder"]
-        )
-        num_datasets += 1
-        # save training data statistics (min, max) for each dim
-        stats = dataset.stats
-        dataset_list.append(dataset)
-        combined_stats.append(stats)
-
-    combined_dataset = ConcatDataset(dataset_list)
+    # 1. Dataset & Dataloader
+    full_path = os.path.abspath(dataset_path)
+    # create dataset from file
+    dataset = PushTImageDataset(
+        dataset_path=full_path,
+        pred_horizon=pred_horizon,
+        obs_horizon=obs_horizon,
+        action_horizon=action_horizon,
+        id = 0,
+        num_demos = num_train_demos,
+        resize_scale = resize_scale,
+        pretrained = config["use_pretrained"],
+        vision_encoder = config["vision_encoder"]
+    )
+    
+    # save training data statistics (min, max) for each dim
+    stats = dataset.stats
 
     # create dataloader
     dataloader = torch.utils.data.DataLoader(
-        combined_dataset,
+        dataset,
         batch_size=batch_size,
         num_workers=4,
         shuffle=True,
@@ -159,10 +127,12 @@ def main():
         print("batch['action'].shape: {}, {}, [{},{}]".format(batch['action'].shape, batch['action'].dtype, torch.min(batch['action']), torch.max(batch['action'])))
         print("batch['id']: {}, [{},{}]".format(batch['id'].shape, torch.min(batch['id']), torch.max(batch['id'])))
 
+
+    # 2. Network Instantiation
     nets = nn.ModuleDict({})
     noise_schedulers = {}
 
-    # add one dp trained on all domains
+    # TODO: add config argument to support different size of foundation model (small, large, big etc.)
     if config["vision_encoder"] == "resnet":
         print("Use ResNet18 as vision encoder")
         vision_feature_dim = 512
@@ -171,14 +141,22 @@ def main():
         else:
             vision_encoder = get_resnet()
         vision_encoder = replace_bn_with_gn(vision_encoder)
+        # freeze vision encoder weights
+        for param in nets["vision_encoder"].parameters():
+            param.requires_grad = False
+
     elif config["vision_encoder"] == "clip":
         print("Use pretrained CLIP-ViT as vision encoder")
         vision_feature_dim = 768
         vision_encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
+        # freeze vision encoder weights
+        vision_encoder.eval()
+
     elif config["vision_encoder"] == "dinov2":
         print("Use pretrained DinoV2 as vision encoder")
         vision_feature_dim = 384
         vision_encoder = Dinov2Model.from_pretrained("facebook/dinov2-small")
+        vision_encoder.eval()
     else:
         raise Exception("vision_encoder is not recognized!")
     
@@ -186,16 +164,9 @@ def main():
     
     # agent_pos is 2 dimensional
     lowdim_obs_dim = 2
-    # observation feature has 514 dims in total per step
+    # observation feature has (vision_feature_dim + lowdim_obs_dim) dims in total per step
     obs_dim = vision_feature_dim + lowdim_obs_dim
     action_dim = 2
-
-    if config["use_mlp"]:
-        nets["invariant_fc"] = DropoutMLP(input_dim=vision_feature_dim, 
-                                            hidden_dim=1024,
-                                            output_dim=vision_feature_dim,
-                                            num_layers=2
-                                            )  
 
     invariant = ConditionalUnet1D(
         input_dim=action_dim,
@@ -206,13 +177,7 @@ def main():
 
     nets = nets.to(device)
 
-    if config["adapt"]:
-        for model_name, model in nets.items():
-            if model_name=="vision_encoder" and (config["use_pretrained"] or config["vision_encoder"]!="resnet"):
-                continue
-            model_path = os.path.join(models_save_dir, f"{model_name}.pth")
-            model_state_dict = torch.load(model_path)
-            model.load_state_dict(model_state_dict)
+    # print_model_parameter_sizes(nets)
 
     # Exponential Moving Average accelerates training and improves stability
     # holds a copy of the model weights
@@ -220,6 +185,8 @@ def main():
         parameters=nets.parameters(),
         power=0.75)
 
+    # 3. Optimizer & Scheduler
+    print("Use default AdamW as optimizer.")
     # Standard ADAM optimizer
     # Note that EMA parameters are not optimized
     optimizer = torch.optim.AdamW(
@@ -232,16 +199,10 @@ def main():
         optimizer=optimizer,
         num_warmup_steps=config["num_warmup_steps"],
         num_training_steps=len(dataloader) * num_epochs
-    )
-    
-    print_model_parameter_sizes(nets)
+    )    
 
-    if config["use_pretrained"]:
-        for param in nets["vision_encoder"].parameters():
-            param.requires_grad = False
-
+    # Training head (Unet)
     with tqdm(range(1, num_epochs+1), desc='Epoch', position=0, leave=True) as tglobal:
-        # unique_ids = torch.arange(num_datasets).cpu()
         # epoch loop
         for epoch_idx in tglobal:
             if config['wandb']:
@@ -271,8 +232,6 @@ def main():
                         outputs = nets["vision_encoder"](pixel_values=nimage.flatten(end_dim=1))
                         image_features = outputs.pooler_output
 
-                    if config["use_mlp"]:
-                        image_features = nets["invariant_fc"](image_features)
                     image_features = image_features.reshape(*nimage.shape[:2],-1)
                     # (B,obs_horizon,D)
 
@@ -318,6 +277,7 @@ def main():
                     epoch_loss.append(loss_cpu)
                     tepoch.set_postfix(loss=loss_cpu)
             tglobal.set_postfix(loss=np.mean(epoch_loss))
+            
             # save and eval upon request
             if (epoch_idx % eval_epoch == 0) or (epoch_idx in [1, num_epochs]):
                 # remove previous checkpoint
@@ -330,31 +290,21 @@ def main():
 
                 # create new checkpoint
                 checkpoint_dir = '{}/checkpoint_epoch_{}'.format(models_save_dir, epoch_idx)
-                if config["adapt"]:
-                    checkpoint_dir = '{}/checkpoint_adapt_epoch_{}'.format(models_save_dir, epoch_idx)
                 if not os.path.exists(checkpoint_dir):
                     os.makedirs(checkpoint_dir)
-                save(ema, nets, checkpoint_dir, config["use_pretrained"] or config["vision_encoder"]!="resnet")
-                scores = eval_baseline(config, dataset_name, num_datasets, combined_stats, checkpoint_dir)
+                save(ema, nets, checkpoint_dir, pretrained_VE=True)
+                scores = eval_baseline(config, stats, checkpoint_dir)
                 # (num_domains, num_tests)
 
                 if config["wandb"]:
-                    for domain_j, domain_j_scores in enumerate(scores):
-
-                        with open("./domains_yaml/{}.yml".format(dataset_name[domain_j]), 'r') as stream:
-                            data_loaded = yaml.safe_load(stream)
-                        env_id = data_loaded["domain_id"]
-
-                        wandb.log({"baseline_single_dp_on_domain_{}_avg_eval_score".format(env_id): np.mean(domain_j_scores), 'epoch': epoch_idx})
+                    wandb.log({"dp_on_domain_{}_avg_eval_score".format(domain_id): np.mean(scores), 'epoch': epoch_idx})
+                    # visualize the first few demos on wandb
+                    for test_k in range(num_vis_demos):
+                        filename = "dp_on_domain_{}_test_{}.mp4".format(domain_id, test_k)
+                        video_name = "dp_on_domain_{}_test_{}".format(domain_id, test_k)                                    
+                        video_file_path = os.path.join(output_dir, filename)
+                        wandb.log({video_name: wandb.Video(video_file_path, fps=10, format="mp4")})
                     
-                        # visualize the first few demos on wandb
-                        for test_k in range(num_vis_demos):
-                            filename = "baseline_single_dp_on_domain_{}_test_{}.mp4".format(env_id, test_k)
-                            video_name = "baseline_single_dp_on_domain_{}_test_{}".format(env_id, test_k)                                    
-                            video_file_path = os.path.join(output_dir, filename)
-                            wandb.log({video_name: wandb.Video(video_file_path, fps=10, format="mp4")})
-                    
-                    wandb.log({"baseline_single_dp_on_all_domains_avg_eval_score": np.mean(scores), 'epoch': epoch_idx})
                     for i in range(10):
                         threshold = 0.1*i
                         count = (np.array(scores)>threshold).sum()
