@@ -35,9 +35,7 @@ def main():
     
     num_epochs = config['num_epochs']
     num_diffusion_iters = config['num_diffusion_iters']
-    num_tests = config['num_tests']
     num_train_demos = config['num_train_demos']
-    num_vis_demos = config['num_vis_demos']
     pred_horizon = config['pred_horizon']
     obs_horizon = config['obs_horizon']
     action_horizon = config['action_horizon']
@@ -48,7 +46,6 @@ def main():
     dataset_path = config['dataset_path']
     domain_id = config['domain_id']
 
-    output_dir = config['output_dir']
     models_save_dir = config['models_save_dir']
     verbose = config['verbose']
     display_name = config['display_name']
@@ -69,26 +66,16 @@ def main():
     print("Training parameters:")
     print(f"num_epochs: {num_epochs}")
     print(f"num_diffusion_iters: {num_diffusion_iters}")
-    print(f"num_tests: {num_tests}")
     print(f"num_train_demos: {num_train_demos}")
-    print(f"num_vis_demos: {num_vis_demos}")
     print(f"pred_horizon: {pred_horizon}")
     print(f"obs_horizon: {obs_horizon}")
     print(f"action_horizon: {action_horizon}")
     print(f"eval_epoch: {eval_epoch}")
 
     print("\nFreeze foundation model as vision encoder, train the head (Unet) in Diffusion Policy!")
-
-    output_dir_good_vis = os.path.join(output_dir, "good_vis")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        os.makedirs(output_dir_good_vis)
     
     if not os.path.exists(models_save_dir):
         os.makedirs(models_save_dir)
-
-    if num_vis_demos > num_tests:
-        num_vis_demos = num_tests
 
     # 1. Dataset & Dataloader
     full_path = os.path.abspath(dataset_path)
@@ -104,9 +91,6 @@ def main():
         pretrained = config["use_pretrained"],
         vision_encoder = config["vision_encoder"]
     )
-    
-    # save training data statistics (min, max) for each dim
-    stats = dataset.stats
 
     # create dataloader
     dataloader = torch.utils.data.DataLoader(
@@ -156,6 +140,7 @@ def main():
         print("Use pretrained DinoV2 as vision encoder")
         vision_feature_dim = 384
         vision_encoder = Dinov2Model.from_pretrained("facebook/dinov2-small")
+        # freeze vision encoder weights
         vision_encoder.eval()
     else:
         raise Exception("vision_encoder is not recognized!")
@@ -285,25 +270,16 @@ def main():
                 if len(pre_checkpoint_dir) != 0:
                     pre_checkpoint_path = os.path.join(models_save_dir, pre_checkpoint_dir[0])
                     shutil.rmtree(pre_checkpoint_path)
-                    shutil.rmtree(output_dir_good_vis)
-                    os.makedirs(output_dir_good_vis)
 
                 # create new checkpoint
                 checkpoint_dir = '{}/checkpoint_epoch_{}'.format(models_save_dir, epoch_idx)
                 if not os.path.exists(checkpoint_dir):
                     os.makedirs(checkpoint_dir)
                 save(ema, nets, checkpoint_dir, pretrained_VE=True)
-                scores = eval_baseline(config, stats, checkpoint_dir)
-                # (num_domains, num_tests)
+                scores = eval_baseline(config, checkpoint_dir)
 
                 if config["wandb"]:
                     wandb.log({"dp_on_domain_{}_avg_eval_score".format(domain_id): np.mean(scores), 'epoch': epoch_idx})
-                    # visualize the first few demos on wandb
-                    for test_k in range(num_vis_demos):
-                        filename = "dp_on_domain_{}_test_{}.mp4".format(domain_id, test_k)
-                        video_name = "dp_on_domain_{}_test_{}".format(domain_id, test_k)                                    
-                        video_file_path = os.path.join(output_dir, filename)
-                        wandb.log({video_name: wandb.Video(video_file_path, fps=10, format="mp4")})
                     
                     for i in range(10):
                         threshold = 0.1*i

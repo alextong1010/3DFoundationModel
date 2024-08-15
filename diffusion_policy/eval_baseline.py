@@ -25,105 +25,72 @@ def main():
     args = parser.parse_args()
     with open(args.config, 'r') as file:
         config = yaml.safe_load(file)
-        
-    
-    num_train_demos = config['num_train_demos'] 
-    pred_horizon = config['pred_horizon']
-    obs_horizon = config['obs_horizon']
-    action_horizon = config['action_horizon']
-    output_dir = config['output_dir']
+
     models_save_dir = config['models_save_dir']
-    dataset_path_dir = config['dataset_path_dir']
-    adapt_dataset_path_dir = config['adapt_dataset_path_dir']
-    resize_scale = config["resize_scale"]
 
-    if config["use_pretrained"]:
-        print("Load and freeze pretrained vision encoder")
-        resize_scale = 224
-    else:
-        print("Unfreeze and update ResNet18")
+    eval_baseline(config, models_save_dir)
 
-    num_trained_datasets = 0
-    for entry in sorted(os.listdir(dataset_path_dir)):
-        if entry[-5:] == '.zarr':
-            num_trained_datasets += 1
-
-    if config["adapt"]:
-        dataset_path_dir = adapt_dataset_path_dir
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    combined_stats = []
-    num_datasets = 0
-    dataset_name = {} # mapping for domain filename
-
-    ##################### Instantiating Dataset #####################
-
-    for entry in sorted(os.listdir(dataset_path_dir)):
-        if not (entry[-5:] == '.zarr'):
-            continue
-        full_path = os.path.join(dataset_path_dir, entry)
-
-        domain_filename = entry.split(".")[0]
-        dataset_name[num_datasets] = domain_filename
-
-        # create dataset from file
-        dataset = PushTImageDataset(
-            dataset_path=full_path,
-            pred_horizon=pred_horizon,
-            obs_horizon=obs_horizon,
-            action_horizon=action_horizon,
-            id = num_datasets,
-            num_demos = num_train_demos,
-            resize_scale = resize_scale,
-            pretrained=config["use_pretrained"],
-            vision_encoder = config["vision_encoder"]
-        )
-        num_datasets += 1
-        # save training data statistics (min, max) for each dim
-        stats = dataset.stats
-        combined_stats.append(stats)
-
-    eval_baseline(config, dataset_name, num_datasets, combined_stats, models_save_dir)
-
-def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_save_dir):
-
+def eval_baseline(config, models_save_dir):
+    
     # Your training code here
     # For demonstration, we'll just print the values
     num_diffusion_iters = config['num_diffusion_iters']
-    num_tests = config['num_tests']
     num_train_demos = config['num_train_demos']
-    num_vis_demos = config['num_vis_demos']
     pred_horizon = config['pred_horizon']
     obs_horizon = config['obs_horizon']
     action_horizon = config['action_horizon']
+    batch_size = config['batch_size']
     verbose = config['verbose']
-    output_dir = config['output_dir']
-    resize_scale = config["resize_scale"]
+    resize_scale = 224
+    
+    dataset_path = config['dataset_path']
+    domain_id = config['domain_id']
 
-    if config["use_pretrained"]:
-        print("Load and freeze pretrained vision encoder")
-        resize_scale = 224
 
-    if num_vis_demos > num_tests:
-        num_vis_demos = num_tests 
-
-    output_dir_good_vis = os.path.join(output_dir, "good_vis")
-
-    print("Training parameters:")
+    print("Evaluation parameters:")
     print(f"num_diffusion_iters: {num_diffusion_iters}")
-    print(f"num_tests: {num_tests}")
     print(f"num_train_demos: {num_train_demos}")
-    print(f"num_vis_demos: {num_vis_demos}")
     print(f"pred_horizon: {pred_horizon}")
     print(f"obs_horizon: {obs_horizon}")
     print(f"action_horizon: {action_horizon}")
+
+    
+    # 1. Dataset & Dataloader
+    full_path = os.path.abspath(dataset_path)
+
+    # create dataset from file
+    dataset = PushTImageDataset(
+        dataset_path=full_path,
+        pred_horizon=pred_horizon,
+        obs_horizon=obs_horizon,
+        action_horizon=action_horizon,
+        id = 0,
+        num_demos = num_train_demos,
+        resize_scale = resize_scale,
+        pretrained=config["use_pretrained"],
+        vision_encoder = config["vision_encoder"]
+    )
+    # save training data statistics (min, max) for each dim
+    stats = dataset.stats
+
+    # create dataloader
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=4,
+        shuffle=True,
+        # accelerate cpu-gpu transfer
+        pin_memory=True,
+        # don't kill worker process afte each epoch
+        persistent_workers=True
+    )
 
 
     ##################### Instantiating Model and EMA #####################
 
     nets = nn.ModuleDict({})
 
+    # TODO: add config argument to support different size of foundation model (small, large, big etc.)
     # add one dp trained on all domains
     if config["vision_encoder"] == "resnet":
         print("Use ResNet18 as vision encoder")
@@ -148,16 +115,9 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
 
     # agent_pos is 2 dimensional
     lowdim_obs_dim = 2
-    # observation feature has 514 dims in total per step
+    # observation feature has (vision_feature_dim + lowdim_obs_dim) dims in total per step
     obs_dim = vision_feature_dim + lowdim_obs_dim
     action_dim = 2
-
-    if config["use_mlp"]:
-        nets["invariant_fc"] = DropoutMLP(input_dim=vision_feature_dim, 
-                                            hidden_dim=1024,
-                                            output_dim=vision_feature_dim,
-                                            num_layers=2
-                                            )  
 
     invariant = ConditionalUnet1D(
         input_dim=action_dim,
@@ -174,7 +134,7 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
     ##################### LOADING Model and EMA #####################
         
     for model_name, model in nets.items():
-        if model_name=="vision_encoder" and (config["use_pretrained"] or config["vision_encoder"]!="resnet"):
+        if model_name=="vision_encoder":
             continue
         model_path = os.path.join(models_save_dir, f"{model_name}.pth")
         model_state_dict = torch.load(model_path)
@@ -188,184 +148,83 @@ def eval_baseline(config, dataset_name, num_datasets, combined_stats, models_sav
 
     print("All models have been loaded successfully.")
 
-
-    ##################### Prepare Inference #####################
-
-    # Standard Gym Env (0.21.0 API)
-
     ##################### Start Inference #####################
     
-    # (num_domains, num_tests)
+    # (num_demos)
     scores = [] 
+    noise_scheduler = create_injected_noise(num_diffusion_iters)
 
-    json_dict = dict()
-    for domain_j in range(num_datasets):
-        env_j_scores = []
-        env_seed = 100000   # first test seed
+    print("\nEval Diffusion Policy on Domain #{}:".format(domain_id))
+    
+    with torch.no_grad():
+        with tqdm(dataloader, desc='Batch', position=1, leave=False) as tepoch:
+            for nbatch in tepoch:
+                nimage = nbatch['image'][:,:obs_horizon].to(device)
+                nagent_pos = nbatch['agent_pos'][:,:obs_horizon].to(device)
+                B = nagent_pos.shape[0]
 
-        with open("./domains_yaml/{}.yml".format(dataset_name[domain_j]), 'r') as stream:
-            data_loaded = yaml.safe_load(stream)        
-        env_id = data_loaded["domain_id"]
+                # encoder vision features
+                if config["vision_encoder"]=='resnet':
+                    image_features = nets["vision_encoder"](nimage.flatten(end_dim=1))
+                elif config["vision_encoder"]=='clip':
+                    outputs = nets["vision_encoder"](pixel_values=nimage.flatten(end_dim=1))
+                    image_features = outputs.pooler_output
+                elif config["vision_encoder"]=='dinov2':
+                    outputs = nets["vision_encoder"](pixel_values=nimage.flatten(end_dim=1))
+                    image_features = outputs.pooler_output
 
-        json_dict["domain_{}".format(env_id)] = []
+                image_features = image_features.reshape(*nimage.shape[:2],-1)
+                # (B,obs_horizon,D)
 
-        print("\nEval Diff Policy on Domain #{}:".format(env_id))
+                # concatenate vision feature and low-dim obs
+                obs_features = torch.cat([image_features, nagent_pos], dim=-1)
+                obs_cond = obs_features.flatten(start_dim=1)
+                # (B, obs_horizon * obs_dim)
 
-        for test_index in range(num_tests):
-            noise_scheduler = create_injected_noise(num_diffusion_iters)
-            if verbose:
-                # 0. create env object
-                env = PushTImageEnv(domain_filename=dataset_name[domain_j], 
-                                    resize_scale=resize_scale, 
-                                    pretrained=config["use_pretrained"],
-                                    vision_encoder = config["vision_encoder"])
-                # 1. seed env for initial state.
-                # Seed 0-600 are used for the demonstration dataset.
-                env.seed(1000)
-                # 2. must reset before use
-                obs, info = env.reset()
-                # 3. 2D positional action space [0,512]
-                action = env.action_space.sample()
-                # 4. Standard gym step method
-                obs, reward, terminated, truncated, info = env.step(action)
+                # initialize action from Guassian noise
+                noisy_action = torch.randn((B, pred_horizon, action_dim), device=device)
+                naction = noisy_action
 
-                # prints and explains each dimension of the observation and action vectors
-                with np.printoptions(precision=4, suppress=True, threshold=5):
-                    print("obs['image'].shape: {}, {}, [{},{}]".format(obs['image'].shape, obs['image'].dtype, np.min(obs['image']), np.max(obs['image'])))
-                    print("obs['agent_pos'].shape: {}, {}, [{},{}]".format(obs['agent_pos'].shape, obs['agent_pos'].dtype, np.min(obs['agent_pos']), np.max(obs['agent_pos'])))
-                    print("action.shape: {}, {}, [{},{}]".format(action.shape, action.dtype, np.min(action), np.max(action)))
+                # init scheduler
+                noise_scheduler.set_timesteps(num_diffusion_iters)
 
-            # limit enviornment interaction to 300 steps before termination
-            max_steps = config["max_steps"]
-            env = PushTImageEnv(domain_filename=dataset_name[domain_j], 
-                                resize_scale=resize_scale, 
-                                pretrained=config["use_pretrained"],
-                                vision_encoder = config["vision_encoder"])
-            # use a seed >600 to avoid initial states seen in the training dataset
-            env.seed(env_seed)
-            # get first observation
-            obs, info = env.reset()
-            # keep a queue of last 2 steps of observations
-            obs_deque = collections.deque(
-                [obs] * obs_horizon, maxlen=obs_horizon)
-            # save visualization and rewards
-            imgs = [env.render(mode='rgb_array')]
-            rewards = list()
-            done = False
-            step_idx = 0
+                for k in noise_scheduler.timesteps:
+                    # predict noise
+                    noise_pred = ema_nets["invariant"](
+                        sample=naction,
+                        timestep=k,
+                        global_cond=obs_cond
+                    )                   
 
-            tqdm._instances.clear()
-            with tqdm(total=max_steps, desc="Eval Trial #{}".format(test_index), position=0, leave=True) as pbar:
-                while not done:
-                    B = 1
-                    # stack the last obs_horizon number of observations
-                    images = np.stack([x['image'] for x in obs_deque])
-                    agent_poses = np.stack([x['agent_pos'] for x in obs_deque])
+                    # inverse diffusion step (remove noise)
+                    naction = noise_scheduler.step(
+                        model_output=noise_pred,
+                        timestep=k,
+                        sample=naction
+                    ).prev_sample
 
-                    # normalize observation
-                    nagent_poses = normalize_data(agent_poses, stats=combined_stats[domain_j]['agent_pos'])
+                # unnormalize action
+                naction = naction.detach().to('cpu').numpy()
+                # (B, pred_horizon, action_dim)
+                pred_actions = unnormalize_data(naction, stats=stats['action'])
+
+                # only take the first predicted action
+                pred_action = pred_actions[:,0,:]
+                # (B, action_dim)
+
+                gt_action = nbatch['action']
+                # (B, action_dim)
+
+                # TODO: add two eval metrics here
+                if config["eval_mode"] == 1:
+                    print("test_line1")
+
+                elif config["eval_mode"] == 2:
+                    print("test_line2")
                     
-                    # device transfer
-                    nimages = torch.from_numpy(images).to(device, dtype=torch.float32)
-                    # (2,3,96,96)
-                    nagent_poses = torch.from_numpy(nagent_poses).to(device, dtype=torch.float32)
-                    # (2,2)                
-
-                    # infer action
-                    with torch.no_grad():
-                        # get image features
-                        if config["vision_encoder"]=='resnet':
-                            image_features = nets["vision_encoder"](nimages)
-                        elif config["vision_encoder"]=='clip':
-                            outputs = nets["vision_encoder"](pixel_values=nimages)
-                            image_features = outputs.pooler_output
-                        elif config["vision_encoder"]=='dinov2':
-                            outputs = nets["vision_encoder"](pixel_values=nimages)
-                            image_features = outputs.pooler_output
-
-                        if config["use_mlp"]:
-                            image_features = nets["invariant_fc"](image_features)
-                        # (2,512)
-
-                        # concat with low-dim observations
-                        obs_features = torch.cat([image_features, nagent_poses], dim=-1)
-
-                        # reshape observation to (B,obs_horizon*obs_dim)
-                        obs_cond = obs_features.unsqueeze(0).flatten(start_dim=1)
-
-                        # initialize action from Guassian noise
-                        noisy_action = torch.randn((B, pred_horizon, action_dim), device=device)
-                        naction = noisy_action
-
-                        # init scheduler
-                        noise_scheduler.set_timesteps(num_diffusion_iters)
-
-                        for k in noise_scheduler.timesteps:
-                            # predict noise
-                            noise_pred = ema_nets["invariant"](
-                                sample=naction,
-                                timestep=k,
-                                global_cond=obs_cond
-                            )                   
-
-                            # inverse diffusion step (remove noise)
-                            naction = noise_scheduler.step(
-                                model_output=noise_pred,
-                                timestep=k,
-                                sample=naction
-                            ).prev_sample
-
-                    # unnormalize action
-                    naction = naction.detach().to('cpu').numpy()
-                    # (B, pred_horizon, action_dim)
-                    naction = naction[0]
-                    action_pred = unnormalize_data(naction, stats=combined_stats[domain_j]['action'])
-
-                    # only take action_horizon number of actions
-                    start = obs_horizon - 1
-                    end = start + action_horizon
-                    action = action_pred[start:end,:]
-                    # (action_horizon, action_dim)
-
-                    # execute action_horizon number of steps
-                    # without replanning
-                    for i in range(len(action)):
-                        # stepping env
-                        obs, reward, done, _, info = env.step(action[i])
-                        # save observations
-                        obs_deque.append(obs)
-                        # and reward/vis
-                        rewards.append(reward)
-                        imgs.append(env.render(mode='rgb_array'))
-
-                        # update progress bar
-                        step_idx += 1
-                        pbar.update(1)
-                        pbar.set_postfix({"current": reward, "max": max(rewards)})
-                        if step_idx > max_steps:
-                            done = True
-                        if done:
-                            break
-            
-            env_seed += 1
-            env_j_scores.append(max(rewards))
-            # save the visualization of the first few demos
-            if test_index < num_vis_demos:
-                vwrite(os.path.join(output_dir, "baseline_single_dp_on_domain_{}_test_{}.mp4".format(env_id, test_index)), imgs)
-
-            if max(rewards) > 0.8:
-                vwrite(os.path.join(output_dir_good_vis, "baseline_single_dp_on_domain_{}_test_{}.mp4".format(env_id, test_index)), imgs)
-                cur_dict = {"trial_id": test_index, "score": max(rewards)}
-                json_dict["domain_{}".format(env_id)].append(cur_dict)
-
-        print("Single DP on Domain #{} Avg Score: {}".format(env_id, np.mean(env_j_scores)))
-
-    ############################ Save Result  ############################ 
-        scores.append(env_j_scores)
-
-    with open(os.path.join(output_dir_good_vis, 'result.json'), 'w') as fp:
-        json.dump(json_dict, fp)   
-        
+                else:
+                    raise
+    
     print("Eval done!")
     return scores
 

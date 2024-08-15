@@ -1,9 +1,10 @@
+# mode
+eval_mode: 1 # 1 or 2
 
 # dirs
 display_name: baseline_original
 dataset_path: push_t_dataset/domain18.zarr
 models_save_dir: outputs/trained_models_baseline0
-output_dir: outputs/output_baseline0
 domain_id: 18
 
 # hyperparams
