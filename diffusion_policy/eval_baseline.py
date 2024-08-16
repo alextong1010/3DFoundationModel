@@ -27,6 +27,7 @@ def main():
         config = yaml.safe_load(file)
 
     models_save_dir = config['models_save_dir']
+    _, config['dataset_path'] = split_dataset(config['dataset_path'], config['eval_mode'], config['ratio'])
 
     eval_baseline(config, models_save_dir)
 
@@ -57,6 +58,8 @@ def eval_baseline(config, models_save_dir):
     
     # 1. Dataset & Dataloader
     full_path = os.path.abspath(dataset_path)
+
+
 
     # create dataset from file
     dataset = PushTImageDataset(
@@ -218,6 +221,7 @@ def eval_baseline(config, models_save_dir):
                 # TODO: add two eval metrics here
                 if config["eval_mode"] == 1:
                     print("test_line1")
+
 
                 elif config["eval_mode"] == 2:
                     print("test_line2")

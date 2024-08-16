@@ -25,3 +25,4 @@ batch_size: 64
 wandb: true
 verbose: false
 vision_encoder: resnet # resnet, clip or dinov2
+ratio: 0.9 # percent of dataset that is split into training data

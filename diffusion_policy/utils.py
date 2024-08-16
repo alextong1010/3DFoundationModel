@@ -15,6 +15,7 @@ from diffusers.training_utils import EMAModel
 from diffusers.optimization import get_scheduler
 from tqdm.auto import tqdm
 from PIL import Image
+import itertools
 from transformers import CLIPImageProcessor, AutoImageProcessor
 
 # env import
@@ -148,6 +149,56 @@ def unnormalize_data(ndata, stats):
     data = ndata * (stats['max'] - stats['min']) + stats['min']
     return data
 
+def split_dataset(dataset_path, eval_mode, ratio):
+    assert 0 < ratio <= 1, "ratio must be greater than 0 and less than or equal to 1"
+    dataset_root = zarr.open(dataset_path, 'r')
+    num_max_demos = dataset_root['meta']['episode_ends'][:].shape[0]
+
+    split = ['training', 'testing']
+    paths = []
+    for idx, s in enumerate(split):
+        path = "{}_{}_mode_{}.zarr".format(dataset_path.replace('.zarr', ''), s, eval_mode)
+        if os.path.exists(path):
+            continue
+        paths.append(path)
+        dataset = zarr.open(path, mode='w')
+        dataset.create_group('data')
+        dataset.create_group('meta')
+
+        if (eval_mode == 1): # use the first 90% of demos to train, last 10% to test
+            num_train_demos = np.round(ratio * num_max_demos).astype(int)
+            num_train_frames = dataset_root['meta']['episode_ends'][num_train_demos-1]
+            data_slice = slice(num_train_frames) if idx else slice(num_train_frames, None)
+            demo_slice = slice(num_train_demos) if idx else slice(num_train_demos, None)
+            
+            # create new zarr files
+            for key in dataset_root['data']:
+                dataset['data'][key] = dataset_root['data'][key][data_slice]
+            for key in dataset_root['meta']:
+                dataset['meta'][key] = dataset_root['meta'][key][demo_slice]
+
+        elif (eval_mode == 2): # use the first 90% of steps in all demos to train, last 10% of steps in all demos to test
+            episode_ends = np.array(dataset_root['meta']['episode_ends'])
+            adj_episode_ends = np.copy(episode_ends)
+            adj_episode_ends[-1] = 0
+            orig_slice_idxs = [int(np.round((episode_ends[i]-adj_episode_ends[i-1])*ratio)) + adj_episode_ends[i-1] for i in range(num_max_demos)]
+            if idx: # training split
+                slices = [slice(adj_episode_ends[i-1], orig_slice_idxs[i]) for i in range(num_max_demos)]
+                new_slice_idxs = [(orig_slice_idxs[i] - adj_episode_ends[i-1]) for i in range(len(episode_ends))]
+            else: # testing split
+                slices = [slice(orig_slice_idxs[i], episode_ends[i]) for i in range(num_max_demos)]
+                new_slice_idxs = [(episode_ends[i] - orig_slice_idxs[i]) for i in range(len(episode_ends))]
+            new_slice_idxs = np.array(list(itertools.accumulate(new_slice_idxs)))
+
+            #create new zarr files
+            for key in dataset_root['data']:
+                dataset['data'][key] = np.concatenate([dataset_root['data'][key][s] for s in slices])
+            for key in dataset_root['meta']:
+                dataset['meta'][key] = new_slice_idxs
+        else:
+            raise ValueError("Invalid eval mode. Only eval mode 1 or 2 is allowed.")
+    return paths[0], paths[1] # 0 is training, 1 is testing
+        
 # dataset
 class PushTImageDataset(torch.utils.data.Dataset):
     def __init__(self,
@@ -159,7 +210,9 @@ class PushTImageDataset(torch.utils.data.Dataset):
                  num_demos: int,
                  resize_scale: int, 
                  pretrained=False, 
-                 vision_encoder='resnet'):
+                 vision_encoder='resnet',
+                 eval_mode=1,
+                 ratio=0.9):
 
         # read from zarr dataset
         dataset_root = zarr.open(dataset_path, 'r')
