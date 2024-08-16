@@ -182,6 +182,7 @@ def split_dataset(dataset_path, eval_mode, ratio):
             adj_episode_ends = np.copy(episode_ends)
             adj_episode_ends[-1] = 0
             orig_slice_idxs = [int(np.round((episode_ends[i]-adj_episode_ends[i-1])*ratio)) + adj_episode_ends[i-1] for i in range(num_max_demos)]
+            
             if idx: # training split
                 slices = [slice(adj_episode_ends[i-1], orig_slice_idxs[i]) for i in range(num_max_demos)]
                 new_slice_idxs = [(orig_slice_idxs[i] - adj_episode_ends[i-1]) for i in range(len(episode_ends))]

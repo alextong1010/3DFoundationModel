@@ -29,7 +29,7 @@ def main():
     with open(args.config, 'r') as file:
         config = yaml.safe_load(file)
 
-    config['dataset_path'], = split_dataset(config['dataset_path'], config['eval_mode'], config['ratio'])
+    config['dataset_path'], _ = split_dataset(config['dataset_path'], config['eval_mode'], config['ratio'])
         
     #|o|o|                             observations: 2
     #| |a|a|a|a|a|a|a|a|               actions executed: 8
