@@ -1,5 +1,6 @@
 # mode
 eval_mode: 1 # 1 or 2
+use_pretrained: True
 
 # dirs
 display_name: baseline_original
@@ -10,8 +11,6 @@ domain_id: 18
 # hyperparams
 num_epochs: 500
 num_diffusion_iters: 100
-num_tests: 50
-num_vis_demos: 3
 num_train_demos: 500
 num_warmup_steps: 500
 pred_horizon: 16

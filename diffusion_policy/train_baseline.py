@@ -18,7 +18,7 @@ from transformers import Dinov2Model
 
 # other files
 from utils import *
-from pusht_env import *
+# from pusht_env import *
 from models import *
 from eval_baseline import eval_baseline
 
@@ -46,11 +46,13 @@ def main():
     weight_decay = config['weight_decay']
     batch_size = config['batch_size']
     domain_id = config['domain_id']
-
     models_save_dir = config['models_save_dir']
     verbose = config['verbose']
     display_name = config['display_name']
     resize_scale = 224
+
+    if config['eval_mode']==1:
+        num_train_demos = int(np.round(config['num_train_demos']*config['ratio']))
 
     if display_name == "default":
         display_name = None
@@ -127,7 +129,7 @@ def main():
             vision_encoder = get_resnet()
         vision_encoder = replace_bn_with_gn(vision_encoder)
         # freeze vision encoder weights
-        for param in nets["vision_encoder"].parameters():
+        for param in vision_encoder.parameters():
             param.requires_grad = False
 
     elif config["vision_encoder"] == "clip":
@@ -278,14 +280,12 @@ def main():
                     os.makedirs(checkpoint_dir)
                 save(ema, nets, checkpoint_dir, pretrained_VE=True)
                 scores = eval_baseline(config, checkpoint_dir)
+                print(scores)
 
                 if config["wandb"]:
-                    wandb.log({"dp_on_domain_{}_avg_eval_score".format(domain_id): np.mean(scores), 'epoch': epoch_idx})
+                    wandb.log({"action_mse_loss": scores['normalized_mse_loss'], 'epoch': epoch_idx})
+                    wandb.log({"action_total_loss": scores['normalized_total_loss'], 'epoch': epoch_idx})
                     
-                    for i in range(10):
-                        threshold = 0.1*i
-                        count = (np.array(scores)>threshold).sum()
-                        wandb.log({"num_tests_threshold_{:.1f}".format(threshold): count, 'epoch': epoch_idx})
 
 if __name__ == "__main__":
     main()

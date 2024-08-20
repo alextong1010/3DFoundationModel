@@ -4,10 +4,10 @@ import torch.nn as nn
 import collections
 from diffusers.training_utils import EMAModel
 from tqdm.auto import tqdm
-from skvideo.io import vwrite
 import os
 import argparse
 import json
+import yaml
 
 # CLIP
 from transformers import CLIPVisionModel
@@ -16,7 +16,7 @@ from transformers import Dinov2Model
 
 # dp defined utils
 from utils import *
-from pusht_env import *
+# from pusht_env import *
 from models import *
 
 def main():
@@ -44,6 +44,9 @@ def eval_baseline(config, models_save_dir):
     verbose = config['verbose']
     resize_scale = 224
     domain_id = config['domain_id']
+
+    if config['eval_mode']==1:
+        num_train_demos = num_train_demos-int(np.round(config['num_train_demos']*config['ratio']))
 
 
     print("Evaluation parameters:")
@@ -152,6 +155,7 @@ def eval_baseline(config, models_save_dir):
     
     # (num_demos)
     losses = [] 
+    normalized_losses = []
     noise_scheduler = create_injected_noise(num_diffusion_iters)
 
     print("\nEval Diffusion Policy on Domain #{}:".format(domain_id))
@@ -206,21 +210,30 @@ def eval_baseline(config, models_save_dir):
                 # unnormalize action
                 naction = naction.detach().to('cpu').numpy()
                 # (B, pred_horizon, action_dim)
+                normalized_pred_actions = naction 
                 pred_actions = unnormalize_data(naction, stats=stats['action'])
 
                 # only take the first predicted action
+                normalized_pred_action = normalized_pred_actions[:,0,:]
                 pred_action = pred_actions[:,0,:]
                 # (B, action_dim)
 
-                gt_action = nbatch['action']
+                normalized_gt_action = nbatch['action'][:,0,:].numpy()
+                gt_action = unnormalize_data(normalized_gt_action, stats=stats['action'])
                 # (B, action_dim)
                 l2_norm = np.linalg.norm(pred_action-gt_action)
+                normalized_l2_norm = np.linalg.norm(normalized_pred_action-normalized_gt_action)
                 losses.append(l2_norm)
+                normalized_losses.append(normalized_l2_norm)
 
     # currently we consider mse_loss
     total_loss = np.sum(losses)
     mse_loss = np.mean(losses)    
-    loss_dict = {'total_loss': total_loss, 
+    normalized_total_loss = np.sum(normalized_losses)
+    normalized_mse_loss = np.mean(normalized_losses)
+    loss_dict = {'normalized_total_loss': normalized_total_loss, 
+                   'normalized_mse_loss': normalized_mse_loss,
+                   'total_loss': total_loss,
                    'mse_loss': mse_loss}
     
     print("Eval done!")
