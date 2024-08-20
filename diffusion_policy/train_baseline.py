@@ -29,7 +29,7 @@ def main():
     with open(args.config, 'r') as file:
         config = yaml.safe_load(file)
 
-    config['dataset_path'], _ = split_dataset(config['dataset_path'], config['eval_mode'], config['ratio'])
+    dataset_path, _ = split_dataset(config['dataset_path'], config['eval_mode'], config['ratio'])
         
     #|o|o|                             observations: 2
     #| |a|a|a|a|a|a|a|a|               actions executed: 8
@@ -45,7 +45,6 @@ def main():
     lr = config['lr']
     weight_decay = config['weight_decay']
     batch_size = config['batch_size']
-    dataset_path = config['dataset_path']
     domain_id = config['domain_id']
 
     models_save_dir = config['models_save_dir']

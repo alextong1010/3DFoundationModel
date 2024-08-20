@@ -27,11 +27,11 @@ def main():
         config = yaml.safe_load(file)
 
     models_save_dir = config['models_save_dir']
-    _, config['dataset_path'] = split_dataset(config['dataset_path'], config['eval_mode'], config['ratio'])
 
     eval_baseline(config, models_save_dir)
 
 def eval_baseline(config, models_save_dir):
+    _, dataset_path = split_dataset(config['dataset_path'], config['eval_mode'], config['ratio'])
     
     # Your training code here
     # For demonstration, we'll just print the values
@@ -43,8 +43,6 @@ def eval_baseline(config, models_save_dir):
     batch_size = config['batch_size']
     verbose = config['verbose']
     resize_scale = 224
-    
-    dataset_path = config['dataset_path']
     domain_id = config['domain_id']
 
 
@@ -58,7 +56,6 @@ def eval_baseline(config, models_save_dir):
     
     # 1. Dataset & Dataloader
     full_path = os.path.abspath(dataset_path)
-
 
 
     # create dataset from file
@@ -154,7 +151,7 @@ def eval_baseline(config, models_save_dir):
     ##################### Start Inference #####################
     
     # (num_demos)
-    scores = [] 
+    losses = [] 
     noise_scheduler = create_injected_noise(num_diffusion_iters)
 
     print("\nEval Diffusion Policy on Domain #{}:".format(domain_id))
@@ -217,20 +214,17 @@ def eval_baseline(config, models_save_dir):
 
                 gt_action = nbatch['action']
                 # (B, action_dim)
+                l2_norm = np.linalg.norm(pred_action-gt_action)
+                losses.append(l2_norm)
 
-                # TODO: add two eval metrics here
-                if config["eval_mode"] == 1:
-                    print("test_line1")
-
-
-                elif config["eval_mode"] == 2:
-                    print("test_line2")
-                    
-                else:
-                    raise
+    # currently we consider mse_loss
+    total_loss = np.sum(losses)
+    mse_loss = np.mean(losses)    
+    loss_dict = {'total_loss': total_loss, 
+                   'mse_loss': mse_loss}
     
     print("Eval done!")
-    return scores
+    return loss_dict
 
 if __name__ == "__main__":
     main()
