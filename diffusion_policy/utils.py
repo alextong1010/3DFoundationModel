@@ -154,13 +154,13 @@ def split_dataset(dataset_path, eval_mode, ratio):
     dataset_root = zarr.open(dataset_path, 'r')
     num_max_demos = dataset_root['meta']['episode_ends'][:].shape[0]
 
-    split = ['training', 'testing']
+    split = ['testing', 'training']
     paths = []
     for idx, s in enumerate(split):
         path = "{}_{}_mode_{}.zarr".format(dataset_path.replace('.zarr', ''), s, eval_mode)
+        paths.append(path)
         if os.path.exists(path):
             continue
-        paths.append(path)
         dataset = zarr.open(path, mode='w')
         dataset.create_group('data')
         dataset.create_group('meta')
@@ -171,11 +171,16 @@ def split_dataset(dataset_path, eval_mode, ratio):
             data_slice = slice(num_train_frames) if idx else slice(num_train_frames, None)
             demo_slice = slice(num_train_demos) if idx else slice(num_train_demos, None)
             
+            if idx:
+                new_idx = dataset_root['meta']['episode_ends'][demo_slice]
+            else: 
+                new_idx = dataset_root['meta']['episode_ends'][demo_slice] - num_train_frames
+
             # create new zarr files
             for key in dataset_root['data']:
                 dataset['data'][key] = dataset_root['data'][key][data_slice]
             for key in dataset_root['meta']:
-                dataset['meta'][key] = dataset_root['meta'][key][demo_slice]
+                dataset['meta'][key] = new_idx
 
         elif (eval_mode == 2): # use the first 90% of steps in all demos to train, last 10% of steps in all demos to test
             episode_ends = np.array(dataset_root['meta']['episode_ends'])
