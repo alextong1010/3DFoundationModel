@@ -2,6 +2,10 @@
 eval_mode: 1 # 1 or 2
 use_pretrained: True
 
+# foundation model
+backbone: 'ViT-B-32'
+weights: laion2b_s34b_b79k
+
 # dirs
 display_name: baseline_original
 dataset_path: push_t_dataset/domain18.zarr

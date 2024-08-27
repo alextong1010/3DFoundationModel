@@ -1,18 +1,17 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import collections
+from torchvision.models import ResNet18_Weights
 from diffusers.training_utils import EMAModel
 from tqdm.auto import tqdm
 import os
 import argparse
-import json
+
 import yaml
 
-# CLIP
-from transformers import CLIPVisionModel
-# DinoV2
-from transformers import Dinov2Model
+# OpenCLIP
+import open_clip
+
 
 # dp defined utils
 from utils import *
@@ -41,8 +40,6 @@ def eval_baseline(config, models_save_dir):
     obs_horizon = config['obs_horizon']
     action_horizon = config['action_horizon']
     batch_size = config['batch_size']
-    verbose = config['verbose']
-    resize_scale = 224
     domain_id = config['domain_id']
 
     if config['eval_mode']==1:
@@ -55,39 +52,7 @@ def eval_baseline(config, models_save_dir):
     print(f"pred_horizon: {pred_horizon}")
     print(f"obs_horizon: {obs_horizon}")
     print(f"action_horizon: {action_horizon}")
-
-    
-    # 1. Dataset & Dataloader
-    full_path = os.path.abspath(dataset_path)
-
-
-    # create dataset from file
-    dataset = PushTImageDataset(
-        dataset_path=full_path,
-        pred_horizon=pred_horizon,
-        obs_horizon=obs_horizon,
-        action_horizon=action_horizon,
-        id = 0,
-        num_demos = num_train_demos,
-        resize_scale = resize_scale,
-        pretrained=config["use_pretrained"],
-        vision_encoder = config["vision_encoder"]
-    )
-    # save training data statistics (min, max) for each dim
-    stats = dataset.stats
-
-    # create dataloader
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        num_workers=4,
-        shuffle=True,
-        # accelerate cpu-gpu transfer
-        pin_memory=True,
-        # don't kill worker process afte each epoch
-        persistent_workers=True
-    )
-
+    print("testing dataset: {}".format(dataset_path))
 
     ##################### Instantiating Model and EMA #####################
 
@@ -97,20 +62,75 @@ def eval_baseline(config, models_save_dir):
     # add one dp trained on all domains
     if config["vision_encoder"] == "resnet":
         print("Use ResNet18 as vision encoder")
-        vision_feature_dim = 512
+        
         if config["use_pretrained"]:
             vision_encoder = get_resnet(weights='IMAGENET1K_V1')
         else:
             vision_encoder = get_resnet()
         vision_encoder = replace_bn_with_gn(vision_encoder)
+        vision_feature_dim = 512
+        transform = ResNet18_Weights.IMAGENET1K_V1.transforms(antialias=True)
     elif config["vision_encoder"] == "clip":
-        print("Use pretrained CLIP-ViT as vision encoder")
-        vision_feature_dim = 768
-        vision_encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
+        print("Use OpenCLIP as vision encoder")
+        
+        clip_feature_dim_dict = {'ViT-B-32': 512,
+                                'ViT-B-16': 512,
+                                'ViT-L-14': 768,
+                                'ViT-H-14': 1024,
+                                'ViT-g-14': 1024}
+        backbone_arch = config["backbone"]
+
+        # Get a dictionary of all available models and their pretrained weights
+        open_clip_model_dict = open_clip.list_pretrained()
+        open_clip_model_dict = [x for x in open_clip_model_dict if x[0]==backbone_arch]
+
+        flag = False
+        for model_pair in open_clip_model_dict:
+            if model_pair[1]==config['weights']:
+                flag = True
+                break
+        if not flag:
+            raise Exception("{} is an unsupported pretrained CLIP weights!".format(config['weights']))
+        
+        vision_encoder, _, transform = open_clip.create_model_and_transforms(backbone_arch, pretrained=config['weights']) # This line already loads fine-tuned CLIP weights from local path
+        # freeze vision encoder weights
+        vision_encoder.eval()
+        vision_feature_dim = clip_feature_dim_dict[backbone_arch]
     elif config["vision_encoder"] == "dinov2":
         print("Use pretrained DinoV2 as vision encoder")
-        vision_feature_dim = 384
-        vision_encoder = Dinov2Model.from_pretrained("facebook/dinov2-small")
+        
+        dinov2_feature_dim_dict = {'dinov2_vits14': 384,
+                                    'dinov2_vitb14': 768,
+                                    'dinov2_vitl14': 1024,
+                                    'dinov2_vitg14': 1536}
+
+        backbone_arch = config["backbone"]
+
+        # List available models and weights from the dinov2 repository
+        dinov2_model_list = torch.hub.list('facebookresearch/dinov2')
+
+        flag = False
+        for model_weight in dinov2_model_list:
+            if model_weight==backbone_arch:
+                flag = True
+                break
+        if not flag:
+            raise Exception("{} is an unsupported pretrained dinov2 weights!".format(config['backbone']))
+
+        vision_encoder = torch.hub.load('facebookresearch/dinov2', backbone_arch) #load the backbone
+        # freeze vision encoder weights
+        vision_encoder.eval()
+        vision_feature_dim = dinov2_feature_dim_dict[backbone_arch]
+
+        # check: https://github.com/facebookresearch/dinov2/tree/main?tab=readme-ov-file#pretrained-heads---image-classification
+        transform = v2.Compose([
+            v2.ToImage(),
+            v2.ToDtype(torch.uint8, scale=True),
+            v2.Resize(256, interpolation=torchvision.transforms.InterpolationMode.BICUBIC),
+            v2.CenterCrop(224),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
     else:
         raise Exception("vision_encoder is not recognized!")
 
@@ -140,20 +160,47 @@ def eval_baseline(config, models_save_dir):
         if model_name=="vision_encoder":
             continue
         model_path = os.path.join(models_save_dir, f"{model_name}.pth")
-        model_state_dict = torch.load(model_path)
+        model_state_dict = torch.load(model_path, weights_only=True)
         model.load_state_dict(model_state_dict)
 
     ema_nets = nets
     ema_path = os.path.join(models_save_dir, f"ema_nets.pth")
-    model_state_dict = torch.load(ema_path)
+    model_state_dict = torch.load(ema_path, weights_only=True)
     ema.load_state_dict(model_state_dict)
     ema.copy_to(ema_nets.parameters())
 
     print("All models have been loaded successfully.")
 
+
+   ##################### Dataset & Dataloader #####################
+    full_path = os.path.abspath(dataset_path)
+
+    # create dataset from file
+    dataset = PushTImageDataset(
+        dataset_path=full_path,
+        pred_horizon=pred_horizon,
+        obs_horizon=obs_horizon,
+        action_horizon=action_horizon,
+        id = 0,
+        num_demos = num_train_demos,
+        transform = transform
+    )
+    # save training data statistics (min, max) for each dim
+    stats = dataset.stats
+
+    # create dataloader
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=4,
+        shuffle=True,
+        # accelerate cpu-gpu transfer
+        pin_memory=True,
+        # don't kill worker process afte each epoch
+        persistent_workers=True
+    )
+
     ##################### Start Inference #####################
-    
-    # (num_demos)
     losses_1st = [] 
     normalized_losses_1st = []
     losses = []
@@ -173,11 +220,10 @@ def eval_baseline(config, models_save_dir):
                 if config["vision_encoder"]=='resnet':
                     image_features = nets["vision_encoder"](nimage.flatten(end_dim=1))
                 elif config["vision_encoder"]=='clip':
-                    outputs = nets["vision_encoder"](pixel_values=nimage.flatten(end_dim=1))
-                    image_features = outputs.pooler_output
+                    image_features = nets["vision_encoder"].encode_image(nimage.flatten(end_dim=1))
+                    image_features /= image_features.norm(dim=-1, keepdim=True)
                 elif config["vision_encoder"]=='dinov2':
-                    outputs = nets["vision_encoder"](pixel_values=nimage.flatten(end_dim=1))
-                    image_features = outputs.pooler_output
+                    image_features = nets["vision_encoder"](nimage.flatten(end_dim=1))
 
                 image_features = image_features.reshape(*nimage.shape[:2],-1)
                 # (B,obs_horizon,D)

@@ -2,14 +2,18 @@
 eval_mode: 1 # 1 or 2
 use_pretrained: True
 
+# foundation model
+backbone: 'ViT-B-32'
+weights: laion2b_s34b_b79k
+
 # dirs
-display_name: baseline_test
+display_name: baseline_test_mode1
 dataset_path: push_t_dataset/domain18.zarr
 models_save_dir: outputs/trained_models_test
 domain_id: 18
 
 # hyperparams
-num_epochs: 2
+num_epochs: 1
 num_diffusion_iters: 100
 num_train_demos: 500
 num_warmup_steps: 500
@@ -23,5 +27,5 @@ weight_decay: 0.000001
 batch_size: 64
 wandb: false
 verbose: false
-vision_encoder: resnet # resnet, clip or dinov2
+vision_encoder: clip # resnet, clip or dinov2
 ratio: 0.9 # percent of dataset that is split into training data
