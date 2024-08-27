@@ -154,7 +154,9 @@ def eval_baseline(config, models_save_dir):
     ##################### Start Inference #####################
     
     # (num_demos)
-    losses = [] 
+    losses_1st = [] 
+    normalized_losses_1st = []
+    losses = []
     normalized_losses = []
     noise_scheduler = create_injected_noise(num_diffusion_iters)
 
@@ -213,28 +215,63 @@ def eval_baseline(config, models_save_dir):
                 normalized_pred_actions = naction 
                 pred_actions = unnormalize_data(naction, stats=stats['action'])
 
-                # only take the first predicted action
-                normalized_pred_action = normalized_pred_actions[:,0,:]
-                pred_action = pred_actions[:,0,:]
+                # prediction
                 # (B, action_dim)
+                normalized_pred_1st_action = normalized_pred_actions[:,0,:]
+                # (B, action_horizon, action_dim)
+                normalized_pred_action = normalized_pred_actions[:,:action_horizon,:]
+                # (B, action_dim)
+                pred_1st_action = pred_actions[:,0,:]
+                # (B, action_horizon, action_dim)
+                pred_action = pred_actions[:,:action_horizon,:]
 
-                normalized_gt_action = nbatch['action'][:,0,:].numpy()
-                gt_action = unnormalize_data(normalized_gt_action, stats=stats['action'])
+                # groundtruth
                 # (B, action_dim)
-                l2_norm = np.linalg.norm(pred_action-gt_action)
-                normalized_l2_norm = np.linalg.norm(normalized_pred_action-normalized_gt_action)
-                losses.append(l2_norm)
-                normalized_losses.append(normalized_l2_norm)
+                normalized_gt_1st_action = nbatch['action'][:,0,:].numpy()
+                # (B, action_horizon, action_dim)
+                normalized_gt_action = nbatch['action'][:,:action_horizon,:].numpy()
+                # (B, action_dim)
+                gt_1st_action = unnormalize_data(normalized_gt_1st_action, stats=stats['action'])
+                # (B, action_horizon, action_dim)
+                gt_action = unnormalize_data(normalized_gt_action, stats=stats['action'])
+                
+                # (B,)
+                l2_norm_1st = [np.linalg.norm(pred_1st_action[i] - gt_1st_action[i]) for i in range(B)]
+                losses_1st += l2_norm_1st
+                # (B,)
+                normalized_l2_norm_1st = [np.linalg.norm(normalized_pred_1st_action[i] - normalized_gt_1st_action[i]) for i in range(B)]
+                normalized_losses_1st += normalized_l2_norm_1st
+                
+                for i in range(B):
+                    # (action_horizon,)
+                    l2_norm_all_steps = [np.linalg.norm(pred_action[i][j] - gt_action[i][j]) for j in range(action_horizon)]
+                    l2_norm_avg = sum(l2_norm_all_steps)/action_horizon
+                    losses.append(l2_norm_avg)
+                    # (action_horizon,)
+                    normalized_l2_norm_all_steps = [np.linalg.norm(normalized_pred_action[i][j] - normalized_gt_action[i][j]) for j in range(action_horizon)]
+                    normalized_l2_norm_avg = sum(normalized_l2_norm_all_steps)/action_horizon
+                    normalized_losses.append(normalized_l2_norm_avg)
+
 
     # currently we consider mse_loss
-    total_loss = np.sum(losses)
-    mse_loss = np.mean(losses)    
-    normalized_total_loss = np.sum(normalized_losses)
-    normalized_mse_loss = np.mean(normalized_losses)
-    loss_dict = {'normalized_total_loss': normalized_total_loss, 
-                   'normalized_mse_loss': normalized_mse_loss,
-                   'total_loss': total_loss,
-                   'mse_loss': mse_loss}
+    total_loss_1st = sum(losses_1st)
+    mse_loss_1st = total_loss_1st/len(losses_1st)   
+    normalized_total_loss_1st = sum(normalized_losses_1st)
+    normalized_mse_loss_1st = normalized_total_loss_1st/len(normalized_losses_1st)
+
+    total_loss = sum(losses)
+    mse_loss = total_loss/len(losses)
+    normalized_total_loss = sum(normalized_losses)
+    normalized_mse_loss = normalized_total_loss/len(normalized_losses)
+
+    loss_dict = {'normalized_total_loss_1st': normalized_total_loss_1st, 
+                 'normalized_mse_loss_1st': normalized_mse_loss_1st,
+                 'total_loss_1st': total_loss_1st,
+                 'mse_loss_1st': mse_loss_1st,
+                 'normalized_total_loss': normalized_total_loss, 
+                 'normalized_mse_loss': normalized_mse_loss,
+                 'total_loss': total_loss,
+                 'mse_loss': mse_loss}
     
     print("Eval done!")
     return loss_dict

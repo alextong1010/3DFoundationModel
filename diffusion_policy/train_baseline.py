@@ -281,10 +281,11 @@ def main():
                 save(ema, nets, checkpoint_dir, pretrained_VE=True)
                 scores = eval_baseline(config, checkpoint_dir)
                 print(scores)
+                scores["epoch"] = epoch_idx
 
                 if config["wandb"]:
-                    wandb.log({"action_mse_loss": scores['normalized_mse_loss'], 'epoch': epoch_idx})
-                    wandb.log({"action_total_loss": scores['normalized_total_loss'], 'epoch': epoch_idx})
+                    wandb.log(scores)
+                    # wandb.log({"action_mse_loss": scores['normalized_mse_loss'], 'epoch': epoch_idx})
                     
 
 if __name__ == "__main__":
