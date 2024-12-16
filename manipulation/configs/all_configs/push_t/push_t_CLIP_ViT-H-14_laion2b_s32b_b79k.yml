@@ -1,0 +1,26 @@
+# foundation model
+vision_encoder: clip # resnet, clip or dinov2
+backbone: 'ViT-H-14'
+weights: laion2b_s32b_b79k
+
+# dirs
+display_name: manipulation_eval
+dataset_path: /n/netscratch/hankyang_lab/Lab/alex/push_t/domain18.zarr
+domain_id: 18
+
+# hyperparams
+num_epochs: 500
+num_diffusion_iters: 100
+num_demos: 500 # number of demonstrations to train on
+num_warmup_steps: 500
+pred_horizon: 16
+obs_horizon: 2
+action_horizon: 8
+max_steps: 300
+eval_epoch: 20
+lr: 0.0001
+weight_decay: 0.000001
+batch_size: 64
+wandb: true
+verbose: false
+ratio: 0.9 # percent of dataset that is split into training data
