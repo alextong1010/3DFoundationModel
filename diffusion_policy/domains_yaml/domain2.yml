@@ -1,9 +1,0 @@
-domain_id: 2
-object: T
-block_color: PaleGreen
-target_color: DarkGoldenrod
-bg_color: Gainsboro
-obstacle_color: Gray
-block_scale: 25
-num_mislead: 1
-num_obstacle: 0

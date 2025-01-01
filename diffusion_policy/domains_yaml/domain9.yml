@@ -1,9 +1,0 @@
-domain_id: 9
-object: circle
-block_color: Crimson
-target_color: Lavender
-bg_color: White
-obstacle_color: Gray
-block_scale: 35
-num_mislead: 2
-num_obstacle: 0

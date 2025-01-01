@@ -1,23 +1,75 @@
-# 3DFoundationModel
+# Manipulation Tasks
 
-## Evaluation Metric of Manipulation Task
+We currently support Push-T and Robomimic tasks, with CLIP and DINOv2 as our vision encoders.
 
-### TODOs
-- Read and try to understand most of the code in `diffusion_policy/eval_baseline.py` and `diffusion_policy/train_baseline.py`.
+Curtsy to the original [diffusion policy paper](https://diffusion-policy.cs.columbia.edu/).
 
-- Install the virtual environment by following the **Environment** section from "diffusion_policy/README.md", make sure you install `PyTorch` with the correct cuda version on your device.
+## Environment
 
-- Download example push-T from the [share link](https://drive.google.com/file/d/1fCxkzbv7q7mzsccrTOm3sPCpHEouU5oc/view?usp=sharing) and unzip it to the path: `diffusion_policy/push_t_blue_dataset/domain6.zarr`.
+```
+sudo apt-get install ffmpeg # only for Linux system
+conda env create -f environment.yml
+conda activate robodiff
+conda install -c pytorch3d pytorch3d
+```
 
-- Register and login `wandb` with your own account.
+## Train
 
-- Try a run on the existing code by following the **Train** section from "diffusion_policy/README.md". You may want to specify a config path (you can use `diffusionpolicy/configs/baseline.yml` by default) and adjust the value `num_tests` and `eval_epoch` for saving evalutation time. 
+Download the datasets from [here](https://diffusion-policy.cs.columbia.edu/data/experiments/image/)
 
-- In order to evaluate the manipulation performance given a fine-tuned model, we would like to set `use_pretrained=True` in the config file, so that the training code would freeze the weights of vision encoder.
+## Train
 
-- Modify evaluation metric in `diffusion_policy/eval_baseline.py`: instead of evaluating a full trajectory given the initial observation image, for each step, we would like to use the groundtruth observation image to predict an action `action_predicted` and do a cosine similarity with `action_groundtruth`. If the length of two actions are not the same, we might want to add a euclidean distance to the metric.
+Change the dataset path in each of the config files that you want to run, and then run
+```
+python train_baseline.py (--config path_to_config_dir)
+```
 
-- Design training pipeline #1: for the given dataset, we use the first 90% of demos to train the diffusion model `ConditionalUnet1D`, and then use the rest 10% of demos to test the performance.
+ which contains the whole training pipeline and saves all the model checkpoints. By default, evaluation will be implemented per 20 epochs. Parameters, loss, eval scores and videos will be uploaded to wandb. 
 
-- Design training pipeline #2: for the given dataset, we use the first 90% of steps in all demos to train the diffusion model `ConditionalUnet1D`, and then use the rest 10% of steps in all demos to test the performance.
+### Training Modes
 
+There should be separate config files for each supported foundation model and weights for simplicity.
+
+## Evaluate
+To evaluate the models, please run
+
+```
+python eval_baseline.py (--config path_to_config_dir)
+```
+
+which prints out the performance score and saves all the output videos in the output folder. But by default, eval is called every 20 epochs during training.
+
+### Config
+Place config files in `./configs`.
+
+Note: if models are evaluated separately from the training file, please make sure pass in the same config.
+
+`num_epochs`: Specifies the number of epochs for training. Default is 200.
+
+`num_diffusion_iters`: Specifies the number of diffusion iterations. Default is 100.
+
+`num_tests`: Specifies the number of trials for evaluation. Default is 20.
+
+`num_demos`: Specifies the number of demos in total per domain. Default is 500. Number of training demos is dependent on ratio (num_demos * ratio)
+
+`num_warmup_steps`: Specifies the number of warmup steps for lr scheduler. Default is 500.
+
+`pred_horizon`: Specifies the prediction horizon. Default is 16.
+
+`obs_horizon`: Specifies the observation horizon. Default is 2.
+
+`action_horizon`: Specifies the action horizon. Default is 8.
+
+`eval_epoch`: Specifies the epoch interval for evaluation. Default is 10.
+
+`lr`: Specifies the lr. Default is 1e-4.
+
+`weight_decay`: Specifies the weight_decay. Default is 1e-6.
+
+`batch_size`: Specifies the batch_size. Default is 64.
+
+`resize_scale`: Specifies the resize_scale. Default is 96 (original image size).
+
+`wandb`: Specifies NOT to use wandb. Default is TO USE.
+
+`verbose`: Enables verbose output during training, including dimension printing and other detailed logs for debugging

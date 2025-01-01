@@ -1,9 +1,0 @@
-domain_id: 3
-object: T
-block_color: Violet
-target_color: Teal
-bg_color: White
-obstacle_color: Gray
-block_scale: 25
-num_mislead: 0
-num_obstacle: 0
